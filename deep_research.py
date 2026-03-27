@@ -4,20 +4,58 @@ from research_manager import ResearchManager
 
 load_dotenv(override=True)
 
-
-async def run(query: str):
-    async for chunk in ResearchManager().run(query):
-        yield chunk
+# State shape: {"stage": "clarifying" | "researching", "query": str}
+INITIAL_STATE = {"stage": "clarifying", "query": ""}
 
 
-with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
+async def handle(message: str, history: list, state: dict):
+    history = history + [{"role": "user", "content": message}]
+    yield "", history, state
+
+    if state["stage"] == "clarifying":
+        questions = await ResearchManager().clarify(message)
+        numbered = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        response = (
+            "Before I start researching, I have a few clarifying questions:\n\n"
+            + numbered
+            + "\n\nPlease answer them so I can tailor the research."
+        )
+        history = history + [{"role": "assistant", "content": response}]
+        new_state = {"stage": "researching", "query": message}
+        yield "", history, new_state
+
+    else:
+        query = state["query"]
+        new_state = {"stage": "clarifying", "query": ""}
+        accumulated = ""
+        history = history + [{"role": "assistant", "content": ""}]
+        async for chunk in ResearchManager().run(query, message):
+            accumulated += chunk
+            history[-1]["content"] = accumulated
+            yield "", history, new_state
+
+
+with gr.Blocks() as ui:
     gr.Markdown("# Deep Research")
-    query_textbox = gr.Textbox(label="What topic would you like to research?")
-    run_button = gr.Button("Run", variant="primary")
-    report = gr.Markdown(label="Report")
-    
-    run_button.click(fn=run, inputs=query_textbox, outputs=report)
-    query_textbox.submit(fn=run, inputs=query_textbox, outputs=report)
 
-ui.launch(inbrowser=True)
+    state = gr.State(INITIAL_STATE)
+    chatbot = gr.Chatbot(label="Research Assistant", height=600)
+    msg_input = gr.Textbox(
+        label="Your message",
+        placeholder="Enter a research topic to get started...",
+        lines=2,
+    )
+    send_button = gr.Button("Send", variant="primary")
 
+    send_button.click(
+        fn=handle,
+        inputs=[msg_input, chatbot, state],
+        outputs=[msg_input, chatbot, state],
+    )
+    msg_input.submit(
+        fn=handle,
+        inputs=[msg_input, chatbot, state],
+        outputs=[msg_input, chatbot, state],
+    )
+
+ui.launch(inbrowser=True, theme=gr.themes.Default(primary_hue="sky"))
